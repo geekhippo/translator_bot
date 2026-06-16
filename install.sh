@@ -1,0 +1,38 @@
+#!/bin/bash
+
+echo "🚀 Запуск установки @translator_bot..."
+
+# 1. Проверка Docker
+if ! command -v docker &> /dev/null; then
+    echo "📦 Docker не найден. Устанавливаю..."
+    curl -fsSL https://get.docker.com -o get-docker.sh
+    sh get-docker.sh
+fi
+
+# 2. Создание директории
+mkdir -p translator_bot
+cd translator_bot
+
+# 3. Запрос данных
+echo "📝 Нам понадобится токен Telegram-бота."
+read -p "Введите TELEGRAM_TOKEN: " TELEGRAM_TOKEN < /dev/tty
+
+cat <<EOF > .env
+TELEGRAM_TOKEN=$TELEGRAM_TOKEN
+EOF
+
+# 4. Скачивание файлов
+echo "📥 Скачиваю файлы бота..."
+curl -sSL https://raw.githubusercontent.com/geekhippo/translator_bot/master/bot.py -o bot.py
+curl -sSL https://raw.githubusercontent.com/geekhippo/translator_bot/master/Dockerfile -o Dockerfile
+curl -sSL https://raw.githubusercontent.com/geekhippo/translator_bot/master/requirements.txt -o requirements.txt
+
+# 5. Сборка и запуск
+echo "🏗️ Собираю и запускаю бота..."
+docker build -t translator-bot .
+docker stop translator-bot 2>/dev/null || true
+docker rm translator-bot 2>/dev/null || true
+docker run --name translator-bot --env-file .env -d --restart unless-stopped translator-bot
+
+echo "🎉 Готово! Бот @translator_bot запущен."
+echo "Логи: docker logs -f translator-bot"
