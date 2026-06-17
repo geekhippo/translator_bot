@@ -56,6 +56,23 @@ def get_next_key():
     return key
 
 MAX_CHUNK_SIZE = 4500  # Лимит Google Translate ~5000 символов, берём с запасом
+TELEGRAM_MSG_LIMIT = 4096  # Лимит Telegram на длину сообщения
+
+async def send_long_message(message, text, prefix=""):
+    """Отправляет длинное сообщение, разбивая на части если нужно."""
+    if len(text) <= TELEGRAM_MSG_LIMIT:
+        await message.reply_text(text)
+        return
+    # Разбиваем на части по границам строк
+    lines = text.split('\n')
+    chunk = prefix
+    for line in lines:
+        if len(chunk) + len(line) + 1 > TELEGRAM_MSG_LIMIT:
+            await message.reply_text(chunk)
+            chunk = "...\n"
+        chunk += line + '\n'
+    if chunk.strip():
+        await message.reply_text(chunk)
 
 def split_text(text: str, max_size: int = MAX_CHUNK_SIZE) -> list:
     """Разбивает длинный текст на куски по предложениям."""
@@ -293,7 +310,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await msg.reply_text("Не удалось распознать речь.")
                 return
             result = await translate_text(text)
-            await msg.reply_text(f"🎤 Распознанный текст:\n{text}\n\n🇷🇺 Перевод:\n{result}")
+            full_text = f"🎤 Распознанный текст:\n{text}\n\n🇷🇺 Перевод:\n{result}"
+            await send_long_message(msg, full_text)
         except Exception as e:
             await msg.reply_text(f"Ошибка при обработке аудио: {e}")
         finally:
@@ -318,7 +336,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await msg.reply_text("Не удалось распознать речь в кружочке.")
                 return
             result = await translate_text(text)
-            await msg.reply_text(f"🎥 Распознанный текст:\n{text}\n\n🇷🇺 Перевод:\n{result}")
+            full_text = f"🎥 Распознанный текст:\n{text}\n\n🇷🇺 Перевод:\n{result}"
+            await send_long_message(msg, full_text)
         except Exception as e:
             await msg.reply_text(f"Ошибка при обработке кружочка: {e}")
         finally:
@@ -423,7 +442,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await msg.reply_text("Не удалось распознать речь в видео.")
                 return
             result = await translate_text(text)
-            await msg.reply_text(f"🎬 Распознанный текст:\n{text}\n\n🇷🇺 Перевод:\n{result}")
+            full_text = f"🎬 Распознанный текст:\n{text}\n\n🇷🇺 Перевод:\n{result}"
+            await send_long_message(msg, full_text)
         except Exception as e:
             await msg.reply_text(f"Ошибка при обработке видео: {e}")
         finally:
