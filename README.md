@@ -4,6 +4,7 @@ Telegram-бот, который переводит любое текстовое
 
 ## ✨ Возможности
 
+- 🖼️ **Распознавание текста на фото** — отправьте боту картинку с текстом, и он переведет его на русский язык
 - 🔄 **Автоматическое определение языка** — не нужно указывать исходный язык
 - 🇷🇺 **Перевод на русский** — поддержка 100+ языков через Google Translate
 - 🐳 **Docker-контейнер** — изолированная среда, простой запуск
@@ -43,8 +44,8 @@ docker run --name translator-bot --env-file .env -d --restart unless-stopped tra
 ## 🎯 Как использовать
 
 1. Добавьте бота в чат или начните личный диалог
-2. Перешлите любое сообщение на любом языке
-3. Бот ответит переводом на русский 🇷🇺
+2. Отправьте текстовое сообщение или картинку с текстом
+3. Бот ответит переводом на русский 🇷🇺 (для картинок бот также выведет распознанный текст)
 
 ## 📁 Структура проекта
 
@@ -80,6 +81,7 @@ docker build -t translator-bot . && docker restart translator-bot
 
 - [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) — работа с Telegram API
 - [deep-translator](https://github.com/nidhaloff/deep-translator) — перевод через Google Translate
+- [pytesseract](https://github.com/madmaze/pytesseract) — распознавание текста (OCR)
 
 ## 📄 Лицензия
 
