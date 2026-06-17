@@ -4,3 +4,7 @@ pytesseract
 pillow
 opencv-python-headless
 httpx
+PyMuPDF
+python-docx
+trafilatura
+beautifulsoup4

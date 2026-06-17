@@ -2,6 +2,8 @@ import os
 import logging
 import subprocess
 import tempfile
+import re
+from urllib.parse import urlparse
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 from deep_translator import GoogleTranslator
@@ -9,6 +11,30 @@ import pytesseract
 from PIL import Image
 import io
 import httpx
+
+try:
+    import fitz  # PyMuPDF
+    PDF_SUPPORT = True
+except ImportError:
+    PDF_SUPPORT = False
+    logging.warning("PyMuPDF не установлен, поддержка PDF отключена")
+
+try:
+    from docx import Document
+    DOCX_SUPPORT = True
+except ImportError:
+    DOCX_SUPPORT = False
+    logging.warning("python-docx не установлен, поддержка DOCX отключена")
+
+try:
+    from trafilatura import extract as trafilatura_extract
+    from trafilatura.settings import use_config
+    LINK_SUPPORT = True
+    _trafilatura_config = use_config()
+    _trafilatura_config.set("DEFAULT", "EXTRACTION_TIMEOUT", "10")
+except ImportError:
+    LINK_SUPPORT = False
+    logging.warning("trafilatura не установлен, поддержка ссылок отключена")
 
 TOKEN = os.environ.get("BOT_TOKEN")
 GROQ_API_KEYS = os.getenv("GROQ_API_KEYS", "").split(",")
@@ -25,8 +51,108 @@ def get_next_key():
     current_key_index = (current_key_index + 1) % len(GROQ_API_KEYS)
     return key
 
+MAX_CHUNK_SIZE = 4500  # Лимит Google Translate ~5000 символов, берём с запасом
+
+def split_text(text: str, max_size: int = MAX_CHUNK_SIZE) -> list:
+    """Разбивает длинный текст на куски по предложениям."""
+    chunks = []
+    while len(text) > max_size:
+        # Ищем ближайшую точку/перенос строки в пределах лимита
+        split_pos = max(
+            text.rfind('. ', 0, max_size),
+            text.rfind('\n', 0, max_size),
+            text.rfind('! ', 0, max_size),
+            text.rfind('? ', 0, max_size),
+        )
+        if split_pos <= 0:
+            split_pos = max_size
+        chunks.append(text[:split_pos + 1])
+        text = text[split_pos + 1:]
+    if text.strip():
+        chunks.append(text)
+    return chunks
+
 async def translate_text(text: str) -> str:
-    return GoogleTranslator(source='auto', target='ru').translate(text)
+    """Переводит текст, разбивая на куски при необходимости."""
+    if not text.strip():
+        return ""
+    chunks = split_text(text)
+    results = []
+    for chunk in chunks:
+        try:
+            translated = GoogleTranslator(source='auto', target='ru').translate(chunk)
+            results.append(translated)
+        except Exception as e:
+            logging.error(f"Ошибка перевода куска: {e}")
+            results.append(chunk)
+    return '\n'.join(results)
+
+async def extract_text_from_pdf(file_path: str) -> str:
+    if not PDF_SUPPORT:
+        return ""
+    try:
+        doc = fitz.open(file_path)
+        text_parts = []
+        for page in doc:
+            text_parts.append(page.get_text())
+        doc.close()
+        return '\n'.join(text_parts)
+    except Exception as e:
+        logging.error(f"Ошибка PDF: {e}")
+        return ""
+
+async def extract_text_from_docx(file_path: str) -> str:
+    if not DOCX_SUPPORT:
+        return ""
+    try:
+        doc = Document(file_path)
+        paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+        return '\n'.join(paragraphs)
+    except Exception as e:
+        logging.error(f"Ошибка DOCX: {e}")
+        return ""
+
+async def extract_text_from_txt(file_path: str) -> str:
+    try:
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            return f.read()
+    except Exception as e:
+        logging.error(f"Ошибка TXT: {e}")
+        return ""
+
+async def fetch_webpage_text(url: str) -> str:
+    """Извлекает основной текст с веб-страницы."""
+    if not LINK_SUPPORT:
+        return ""
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            html = response.text
+            text = trafilatura_extract(html, config=_trafilatura_config)
+            if text:
+                return text
+            # Fallback: простой извлечения текста
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, 'html.parser')
+            for script in soup(["script", "style", "header", "footer", "nav"]):
+                script.decompose()
+            body = soup.find('body')
+            return body.get_text(separator='\n', strip=True) if body else ""
+    except Exception as e:
+        logging.error(f"Ошибка парсинга URL {url}: {e}")
+        return ""
+
+def is_url(text: str) -> bool:
+    """Проверяет, является ли текст URL."""
+    try:
+        result = urlparse(text)
+        return all([result.scheme, result.netloc])
+    except:
+        return False
 
 async def transcribe_audio(file_path: str) -> str:
     """Отправляет аудиофайл в Groq Whisper и возвращает распознанный текст."""
@@ -143,6 +269,85 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     os.remove(p)
         return
 
+    # --- Документы (PDF, DOCX, TXT) ---
+    if msg.document:
+        file = await msg.document.get_file()
+        file_name = msg.document.file_name or "document"
+        suffix = os.path.splitext(file_name)[1].lower()
+        
+        if suffix not in ('.pdf', '.docx', '.txt'):
+            await msg.reply_text(f"Формат {suffix} не поддерживается. Отправьте PDF, DOCX или TXT.")
+            return
+        
+        # Проверяем размер файла (лимит Telegram ~20MB)
+        if msg.document.file_size and msg.document.file_size > 20 * 1024 * 1024:
+            await msg.reply_text("Файл слишком большой (максимум 20 МБ).")
+            return
+        
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp_path = tmp.name
+        await file.download_to_drive(tmp_path)
+        try:
+            await msg.reply_text("📄 Извлекаю текст из документа...")
+            if suffix == '.pdf':
+                if not PDF_SUPPORT:
+                    await msg.reply_text("Поддержка PDF не установлена.")
+                    return
+                text = await extract_text_from_pdf(tmp_path)
+            elif suffix == '.docx':
+                if not DOCX_SUPPORT:
+                    await msg.reply_text("Поддержка DOCX не установлена.")
+                    return
+                text = await extract_text_from_docx(tmp_path)
+            elif suffix == '.txt':
+                text = await extract_text_from_txt(tmp_path)
+            else:
+                text = ""
+            
+            if not text.strip():
+                await msg.reply_text("Не удалось извлечь текст из документа.")
+                return
+            
+            # Обрезаем очень длинный текст для предпросмотра
+            preview = text[:1000] + "..." if len(text) > 1000 else text
+            result = await translate_text(text)
+            result_preview = result[:3000] + "\n\n(перевод обрезан, полный текст слишком длинный)" if len(result) > 3000 else result
+            
+            await msg.reply_text(
+                f"📄 Документ: {file_name}\n"
+                f"📝 Извлечённый текст ({len(text)} символов):\n{preview}\n\n"
+                f"🇷🇺 Перевод:\n{result_preview}"
+            )
+        except Exception as e:
+            await msg.reply_text(f"Ошибка при обработке документа: {e}")
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        return
+
+    # --- Ссылка (URL в тексте) ---
+    if msg.text and is_url(msg.text.strip()):
+        url = msg.text.strip()
+        await msg.reply_text(f"🔗 Загружаю страницу: {url[:50]}...")
+        try:
+            text = await fetch_webpage_text(url)
+            if not text.strip():
+                await msg.reply_text("Не удалось извлечь текст со страницы.")
+                return
+            
+            preview = text[:1500] + "..." if len(text) > 1500 else text
+            result = await translate_text(text)
+            result_preview = result[:3000] + "\n\n(перевод обрезан)" if len(result) > 3000 else result
+            
+            await msg.reply_text(
+                f"🔗 Ссылка: {url}\n"
+                f"📝 Извлечённый текст ({len(text)} символов):\n{preview}\n\n"
+                f"🇷🇺 Перевод:\n{result_preview}"
+            )
+        except Exception as e:
+            await msg.reply_text(f"Ошибка при обработке ссылки: {e}")
+        return
+
     # --- Видео ---
     if msg.video:
         file = await msg.video.get_file()
@@ -173,7 +378,7 @@ if __name__ == '__main__':
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(MessageHandler(
         (filters.TEXT | filters.PHOTO | filters.VOICE | filters.AUDIO |
-         filters.VIDEO | filters.VIDEO_NOTE) & ~filters.COMMAND,
+         filters.VIDEO | filters.VIDEO_NOTE | filters.Document.ALL) & ~filters.COMMAND,
         handle_message
     ))
     print("Бот-переводчик с OCR и STT запущен...")
