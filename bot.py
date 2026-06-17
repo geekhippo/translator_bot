@@ -3,14 +3,18 @@ import logging
 import subprocess
 import tempfile
 import re
+import json
+import time
 from urllib.parse import urlparse
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
 from deep_translator import GoogleTranslator
 import pytesseract
 from PIL import Image
 import io
 import httpx
+
+STATS_FILE = "/app/data/stats.json"
 
 try:
     import fitz  # PyMuPDF
@@ -192,8 +196,62 @@ async def extract_audio_from_video(input_path: str) -> str:
         logging.error(f"Ошибка ffmpeg: {e}")
         return ""
 
+def _load_stats() -> dict:
+    """Загружает статистику из файла."""
+    try:
+        os.makedirs(os.path.dirname(STATS_FILE), exist_ok=True)
+        with open(STATS_FILE, 'r') as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {"total_requests": 0, "users": {}}
+
+def _save_stats(stats: dict):
+    """Сохраняет статистику в файл."""
+    os.makedirs(os.path.dirname(STATS_FILE), exist_ok=True)
+    with open(STATS_FILE, 'w') as f:
+        json.dump(stats, f, ensure_ascii=False, indent=2)
+
+def _record_usage(user_id: int, username: str = None):
+    """Записывает использование бота пользователем."""
+    stats = _load_stats()
+    stats["total_requests"] = stats.get("total_requests", 0) + 1
+    uid = str(user_id)
+    if uid not in stats.get("users", {}):
+        stats["users"][uid] = {"count": 0, "username": username or "unknown"}
+    stats["users"][uid]["count"] = stats["users"][uid].get("count", 0) + 1
+    stats["users"][uid]["username"] = username or stats["users"][uid].get("username", "unknown")
+    stats["users"][uid]["last_used"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    _save_stats(stats)
+
+async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /stats."""
+    stats = _load_stats()
+    total = stats.get("total_requests", 0)
+    users = stats.get("users", {})
+    unique_users = len(users)
+    
+    # Топ-5 активных пользователей
+    sorted_users = sorted(users.values(), key=lambda u: u.get("count", 0), reverse=True)[:5]
+    top_lines = []
+    for i, u in enumerate(sorted_users, 1):
+        name = u.get("username", "unknown")
+        count = u.get("count", 0)
+        top_lines.append(f"  {i}. @{name} — {count} раз")
+    top_text = "\n".join(top_lines) if top_lines else "  пока нет данных"
+    
+    text = (
+        f"📊 **Статистика бота**\n\n"
+        f"👥 Уникальных пользователей: **{unique_users}**\n"
+        f"📝 Всего запросов: **{total}**\n\n"
+        f"🏆 Топ-5 активных:\n{top_text}"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
+    # Записываем статистику
+    user = msg.from_user
+    _record_usage(user.id, user.username or user.first_name)
 
     # --- Текст ---
     if msg.text:
@@ -376,6 +434,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 if __name__ == '__main__':
     app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(MessageHandler(
         (filters.TEXT | filters.PHOTO | filters.VOICE | filters.AUDIO |
          filters.VIDEO | filters.VIDEO_NOTE | filters.Document.ALL) & ~filters.COMMAND,
