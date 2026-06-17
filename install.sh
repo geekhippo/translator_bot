@@ -14,11 +14,15 @@ mkdir -p translator_bot
 cd translator_bot
 
 # 3. Запрос данных
-echo "📝 Нам понадобится токен Telegram-бота."
+echo "📝 Нам понадобятся ключи для работы бота."
 read -p "Введите TELEGRAM_TOKEN: " TELEGRAM_TOKEN < /dev/tty
+echo "🔑 Для распознавания голосовых и видео нужен Groq API Key."
+echo "   Получить бесплатно: https://console.groq.com/keys"
+read -p "Введите GROQ_API_KEYS (можно несколько через запятую): " GROQ_API_KEYS < /dev/tty
 
 cat <<EOF > .env
 TELEGRAM_TOKEN=$TELEGRAM_TOKEN
+GROQ_API_KEYS=$GROQ_API_KEYS
 EOF
 
 # 4. Скачивание файлов
@@ -35,4 +39,12 @@ docker rm translator-bot 2>/dev/null || true
 docker run --name translator-bot --env-file .env -d --restart unless-stopped translator-bot
 
 echo "🎉 Готово! Бот @translator_bot запущен."
+echo ""
+echo "Возможности бота:"
+echo "  📝 Перевод текста"
+echo "  🖼️ Перевод текста с картинок (OCR)"
+echo "  🎤 Перевод голосовых сообщений"
+echo "  🎥 Перевод кружочков"
+echo "  🎬 Перевод видео"
+echo ""
 echo "Логи: docker logs -f translator-bot"

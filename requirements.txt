@@ -3,3 +3,4 @@ deep-translator
 pytesseract
 pillow
 opencv-python-headless
+httpx
