@@ -1,0 +1,8 @@
+.git/
+.gitignore
+README.md
+install.sh
+.dockerignore
+__pycache__/
+*.pyc
+.env

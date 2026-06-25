@@ -20,6 +20,7 @@
 - ⚡ **Мгновенный ответ** — перевод за секунды
 - 🔄 **Автоматический перезапуск** — бот не падает, работает 24/7
 - 🔑 **Ротация API-ключей Groq** — автоматическое переключение между ключами при лимите
+- 📊 **Статистика** — команда `/stats` показывает топ пользователей
 
 ## 🚀 Быстрый старт
 
@@ -37,12 +38,15 @@ git clone https://github.com/geekhippo/translator_bot.git
 cd translator_bot
 
 # 2. Создайте .env с токенами
-echo "TELEGRAM_TOKEN=твой_токен" > .env
+echo "TELEGRAM_TOKEN=***" > .env
 echo "GROQ_API_KEYS=твой_ключ_groq" >> .env
 
 # 3. Соберите и запустите
 docker build -t translator-bot .
-docker run --name translator-bot --env-file .env -d --restart unless-stopped translator-bot
+docker run --name translator-bot-container \
+  --env-file .env \
+  -v translator-bot-data:/app/data \
+  -d --restart unless-stopped translator-bot
 ```
 
 ## 📝 Как получить ключи
@@ -70,14 +74,15 @@ docker run --name translator-bot --env-file .env -d --restart unless-stopped tra
    | Тип | Что делает бот |
    |-----|----------------|
    | 📝 Текст | Переводит на русский |
+   | 🔗 Ссылка (URL) | Парсит страницу и переводит контент |
    | 🖼️ Фото | Распознаёт текст (OCR) и переводит |
    | 🎤 Голосовое | Распознаёт речь и переводит |
    | 🎥 Кружочек | Извлекает аудио, распознаёт и переводит |
    | 🎬 Видео | Извлекает аудио, распознаёт и переводит |
    | 📄 PDF/DOCX/TXT | Извлекает текст из документа и переводит |
-   | 🔗 Ссылка (URL) | Парсит страницу и переводит контент |
 
 3. Бот ответит распознанным текстом и переводом на русский 🇷🇺
+4. Команда `/stats` покажет статистику использования
 
 ## 📁 Структура проекта
 
@@ -87,6 +92,9 @@ translator_bot/
 ├── Dockerfile          # Docker-образ (Python + Tesseract + FFmpeg)
 ├── requirements.txt    # Python-зависимости
 ├── install.sh          # Скрипт установки
+├── LICENSE             # MIT License
+├── .gitignore          # Игнорируемые файлы
+├── .dockerignore       # Игнорируемые файлы при сборке Docker
 └── README.md           # Документация
 ```
 
@@ -94,19 +102,19 @@ translator_bot/
 
 ```bash
 # Запуск
-docker start translator-bot
+docker start translator-bot-container
 
 # Остановка
-docker stop translator-bot
+docker stop translator-bot-container
 
 # Логи
-docker logs -f translator-bot
+docker logs -f translator-bot-container
 
 # Перезапуск
-docker restart translator-bot
+docker restart translator-bot-container
 
 # Обновление
-cd translator_bot && git pull && docker build -t translator-bot . && docker restart translator-bot
+cd translator_bot && git pull && docker build -t translator-bot . && docker stop translator-bot-container && docker rm translator-bot-container && docker run --name translator-bot-container --env-file .env -v translator-bot-data:/app/data -d --restart unless-stopped translator-bot
 ```
 
 ## 📦 Зависимости

@@ -1,6 +1,7 @@
 #!/bin/bash
+set -e
 
-echo "🚀 Запуск установки @translator_bot..."
+echo "🚀 Запуск установки @hippotranslator_bot..."
 
 # 1. Проверка Docker
 if ! command -v docker &> /dev/null; then
@@ -27,18 +28,29 @@ EOF
 
 # 4. Скачивание файлов
 echo "📥 Скачиваю файлы бота..."
-curl -sSL https://raw.githubusercontent.com/geekhippo/translator_bot/master/bot.py -o bot.py
-curl -sSL https://raw.githubusercontent.com/geekhippo/translator_bot/master/Dockerfile -o Dockerfile
-curl -sSL https://raw.githubusercontent.com/geekhippo/translator_bot/master/requirements.txt -o requirements.txt
+curl -fsSL https://raw.githubusercontent.com/geekhippo/translator_bot/master/bot.py -o bot.py
+curl -fsSL https://raw.githubusercontent.com/geekhippo/translator_bot/master/Dockerfile -o Dockerfile
+curl -fsSL https://raw.githubusercontent.com/geekhippo/translator_bot/master/requirements.txt -o requirements.txt
 
 # 5. Сборка и запуск
 echo "🏗️ Собираю и запускаю бота..."
 docker build -t translator-bot .
-docker stop translator-bot 2>/dev/null || true
-docker rm translator-bot 2>/dev/null || true
-docker run --name translator-bot --env-file .env -d --restart unless-stopped translator-bot
 
-echo "🎉 Готово! Бот @translator_bot запущен."
+# Останавливаем и удаляем старый контейнер, если есть
+docker stop translator-bot-container 2>/dev/null || true
+docker rm translator-bot-container 2>/dev/null || true
+
+# Создаём volume для статистики
+docker volume create translator-bot-data 2>/dev/null || true
+
+docker run --name translator-bot-container \
+    --env-file .env \
+    -v translator-bot-data:/app/data \
+    -d \
+    --restart unless-stopped \
+    translator-bot
+
+echo "🎉 Готово! Бот @hippotranslator_bot запущен."
 echo ""
 echo "Возможности бота:"
 echo "  📝 Перевод текста"
@@ -48,5 +60,6 @@ echo "  🎥 Перевод кружочков"
 echo "  🎬 Перевод видео"
 echo "  📄 Перевод документов (PDF, DOCX, TXT)"
 echo "  🔗 Перевод веб-страниц (URL)"
+echo "  📊 Статистика: /stats"
 echo ""
-echo "Логи: docker logs -f translator-bot"
+echo "Логи: docker logs -f translator-bot-container"

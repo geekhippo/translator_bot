@@ -15,6 +15,7 @@ import io
 import httpx
 
 STATS_FILE = "/app/data/stats.json"
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB лимит на медиафайлы
 
 try:
     import fitz  # PyMuPDF
@@ -41,7 +42,7 @@ except ImportError:
     logging.warning("trafilatura не установлен, поддержка ссылок отключена")
 
 TOKEN = os.environ.get("BOT_TOKEN")
-GROQ_API_KEYS = os.getenv("GROQ_API_KEYS", "").split(",")
+GROQ_API_KEYS = [k.strip() for k in os.getenv("GROQ_API_KEYS", "").split(",") if k.strip()]
 current_key_index = 0
 
 logging.basicConfig(
@@ -49,9 +50,15 @@ logging.basicConfig(
     level=logging.INFO
 )
 
+async def on_post_init(application):
+    """Удаляет webhook при старте — исключает 409 Conflict."""
+    await application.bot.delete_webhook(drop_pending_updates=True)
+
 def get_next_key():
     global current_key_index
-    key = GROQ_API_KEYS[current_key_index].strip()
+    if not GROQ_API_KEYS:
+        return ""
+    key = GROQ_API_KEYS[current_key_index]
     current_key_index = (current_key_index + 1) % len(GROQ_API_KEYS)
     return key
 
@@ -186,9 +193,23 @@ def is_url(text: str) -> bool:
     except:
         return False
 
+def _get_mime_for_file(file_path: str) -> str:
+    """Определяет MIME-тип по расширению файла."""
+    ext = os.path.splitext(file_path)[1].lower()
+    mime_map = {
+        '.ogg': 'audio/ogg',
+        '.mp3': 'audio/mpeg',
+        '.wav': 'audio/wav',
+        '.mp4': 'audio/mp4',
+        '.m4a': 'audio/mp4',
+        '.webm': 'audio/webm',
+    }
+    return mime_map.get(ext, 'audio/ogg')  # fallback на ogg
+
 async def transcribe_audio(file_path: str) -> str:
     """Отправляет аудиофайл в Groq Whisper и возвращает распознанный текст."""
-    for _ in range(len(GROQ_API_KEYS)):
+    mime_type = _get_mime_for_file(file_path)
+    for _ in range(len(GROQ_API_KEYS) if GROQ_API_KEYS else 1):
         api_key = get_next_key()
         if not api_key:
             continue
@@ -198,7 +219,7 @@ async def transcribe_audio(file_path: str) -> str:
                     response = await client.post(
                         "https://api.groq.com/openai/v1/audio/transcriptions",
                         headers={"Authorization": f"Bearer {api_key}"},
-                        files={"file": (os.path.basename(file_path), f, "audio/ogg")},
+                        files={"file": (os.path.basename(file_path), f, mime_type)},
                         data={"model": "whisper-large-v3"},
                         timeout=120.0
                     )
@@ -235,21 +256,27 @@ def _load_stats() -> dict:
 
 def _save_stats(stats: dict):
     """Сохраняет статистику в файл."""
-    os.makedirs(os.path.dirname(STATS_FILE), exist_ok=True)
-    with open(STATS_FILE, 'w') as f:
-        json.dump(stats, f, ensure_ascii=False, indent=2)
+    try:
+        os.makedirs(os.path.dirname(STATS_FILE), exist_ok=True)
+        with open(STATS_FILE, 'w') as f:
+            json.dump(stats, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logging.error(f"Ошибка сохранения статистики: {e}")
 
 def _record_usage(user_id: int, username: str = None):
-    """Записывает использование бота пользователем."""
-    stats = _load_stats()
-    stats["total_requests"] = stats.get("total_requests", 0) + 1
-    uid = str(user_id)
-    if uid not in stats.get("users", {}):
-        stats["users"][uid] = {"count": 0, "username": username or "unknown"}
-    stats["users"][uid]["count"] = stats["users"][uid].get("count", 0) + 1
-    stats["users"][uid]["username"] = username or stats["users"][uid].get("username", "unknown")
-    stats["users"][uid]["last_used"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    _save_stats(stats)
+    """Записывает использование бота пользователем. Ошибки не ломают обработку."""
+    try:
+        stats = _load_stats()
+        stats["total_requests"] = stats.get("total_requests", 0) + 1
+        uid = str(user_id)
+        if uid not in stats.get("users", {}):
+            stats["users"][uid] = {"count": 0, "username": username or "unknown"}
+        stats["users"][uid]["count"] = stats["users"][uid].get("count", 0) + 1
+        stats["users"][uid]["username"] = username or stats["users"][uid].get("username", "unknown")
+        stats["users"][uid]["last_used"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        _save_stats(stats)
+    except Exception as e:
+        logging.error(f"Ошибка записи статистики: {e}")
 
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /stats."""
@@ -257,7 +284,7 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total = stats.get("total_requests", 0)
     users = stats.get("users", {})
     unique_users = len(users)
-    
+
     # Топ-5 активных пользователей
     sorted_users = sorted(users.values(), key=lambda u: u.get("count", 0), reverse=True)[:5]
     top_lines = []
@@ -266,7 +293,7 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         count = u.get("count", 0)
         top_lines.append(f"  {i}. @{name} — {count} раз")
     top_text = "\n".join(top_lines) if top_lines else "  пока нет данных"
-    
+
     text = (
         f"📊 **Статистика бота**\n\n"
         f"👥 Уникальных пользователей: **{unique_users}**\n"
@@ -277,18 +304,44 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
-    # Записываем статистику
     user = msg.from_user
-    _record_usage(user.id, user.username or user.first_name)
 
-    # --- Текст ---
+    try:
+        _record_usage(user.id, user.username or user.first_name)
+    except Exception:
+        pass  # Статистика не должна ломать обработку
+
+    # --- Текст или URL ---
     if msg.text:
-        text = msg.text
-        try:
-            result = await translate_text(text)
-            await msg.reply_text(f"🇷🇺 {result}")
-        except Exception as e:
-            await msg.reply_text(f"Ошибка перевода: {e}")
+        text = msg.text.strip()
+        if is_url(text):
+            # --- Ссылка (URL) ---
+            url = text
+            await msg.reply_text(f"🔗 Загружаю страницу: {url[:50]}...")
+            try:
+                page_text = await fetch_webpage_text(url)
+                if not page_text.strip():
+                    await msg.reply_text("Не удалось извлечь текст со страницы.")
+                    return
+
+                preview = page_text[:1500] + "..." if len(page_text) > 1500 else page_text
+                result = await translate_text(page_text)
+                result_preview = result[:3000] + "\n\n(перевод обрезан)" if len(result) > 3000 else result
+
+                await msg.reply_text(
+                    f"🔗 Ссылка: {url}\n"
+                    f"📝 Извлечённый текст ({len(page_text)} символов):\n{preview}\n\n"
+                    f"🇷🇺 Перевод:\n{result_preview}"
+                )
+            except Exception as e:
+                await msg.reply_text(f"Ошибка при обработке ссылки: {e}")
+        else:
+            # --- Обычный текст — перевод ---
+            try:
+                result = await translate_text(text)
+                await msg.reply_text(f"🇷🇺 {result}")
+            except Exception as e:
+                await msg.reply_text(f"Ошибка перевода: {e}")
         return
 
     # --- Фото (OCR) ---
@@ -297,7 +350,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_bytes = await file.download_as_bytearray()
         try:
             image = Image.open(io.BytesIO(file_bytes))
-            text = pytesseract.image_to_string(image)
+            # Используем русский + английский язык для OCR
+            text = pytesseract.image_to_string(image, lang='rus+eng')
             if not text.strip():
                 await msg.reply_text("Не удалось распознать текст на изображении.")
                 return
@@ -310,8 +364,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- Голосовое сообщение / Аудио ---
     if msg.voice or msg.audio:
         file_obj = msg.voice or msg.audio
+        if file_obj.file_size and file_obj.file_size > MAX_FILE_SIZE:
+            await msg.reply_text("Файл слишком большой (максимум 50 МБ).")
+            return
         file = await file_obj.get_file()
-        suffix = ".ogg"
+        suffix = os.path.splitext(file.file_path or ".ogg")[1] or ".ogg"
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp_path = tmp.name
         await file.download_to_drive(tmp_path)
@@ -332,6 +389,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- Кружочек (video_note) ---
     if msg.video_note:
+        if msg.video_note.file_size and msg.video_note.file_size > MAX_FILE_SIZE:
+            await msg.reply_text("Файл слишком большой (максимум 50 МБ).")
+            return
         file = await msg.video_note.get_file()
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
             tmp_path = tmp.name
@@ -362,16 +422,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file = await msg.document.get_file()
         file_name = msg.document.file_name or "document"
         suffix = os.path.splitext(file_name)[1].lower()
-        
+
         if suffix not in ('.pdf', '.docx', '.txt'):
             await msg.reply_text(f"Формат {suffix} не поддерживается. Отправьте PDF, DOCX или TXT.")
             return
-        
+
         # Проверяем размер файла (лимит Telegram ~20MB)
         if msg.document.file_size and msg.document.file_size > 20 * 1024 * 1024:
             await msg.reply_text("Файл слишком большой (максимум 20 МБ).")
             return
-        
+
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp_path = tmp.name
         await file.download_to_drive(tmp_path)
@@ -391,16 +451,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text = await extract_text_from_txt(tmp_path)
             else:
                 text = ""
-            
+
             if not text.strip():
                 await msg.reply_text("Не удалось извлечь текст из документа.")
                 return
-            
+
             # Обрезаем очень длинный текст для предпросмотра
             preview = text[:1000] + "..." if len(text) > 1000 else text
             result = await translate_text(text)
             result_preview = result[:3000] + "\n\n(перевод обрезан, полный текст слишком длинный)" if len(result) > 3000 else result
-            
+
             await msg.reply_text(
                 f"📄 Документ: {file_name}\n"
                 f"📝 Извлечённый текст ({len(text)} символов):\n{preview}\n\n"
@@ -413,31 +473,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 os.remove(tmp_path)
         return
 
-    # --- Ссылка (URL в тексте) ---
-    if msg.text and is_url(msg.text.strip()):
-        url = msg.text.strip()
-        await msg.reply_text(f"🔗 Загружаю страницу: {url[:50]}...")
-        try:
-            text = await fetch_webpage_text(url)
-            if not text.strip():
-                await msg.reply_text("Не удалось извлечь текст со страницы.")
-                return
-            
-            preview = text[:1500] + "..." if len(text) > 1500 else text
-            result = await translate_text(text)
-            result_preview = result[:3000] + "\n\n(перевод обрезан)" if len(result) > 3000 else result
-            
-            await msg.reply_text(
-                f"🔗 Ссылка: {url}\n"
-                f"📝 Извлечённый текст ({len(text)} символов):\n{preview}\n\n"
-                f"🇷🇺 Перевод:\n{result_preview}"
-            )
-        except Exception as e:
-            await msg.reply_text(f"Ошибка при обработке ссылки: {e}")
-        return
-
     # --- Видео ---
     if msg.video:
+        if msg.video.file_size and msg.video.file_size > MAX_FILE_SIZE:
+            await msg.reply_text("Файл слишком большой (максимум 50 МБ).")
+            return
         file = await msg.video.get_file()
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
             tmp_path = tmp.name
@@ -464,7 +504,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 if __name__ == '__main__':
-    app = ApplicationBuilder().token(TOKEN).build()
+    app = ApplicationBuilder().token(TOKEN).post_init(on_post_init).build()
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(MessageHandler(
         (filters.TEXT | filters.PHOTO | filters.VOICE | filters.AUDIO |
@@ -472,4 +512,4 @@ if __name__ == '__main__':
         handle_message
     ))
     print("Бот-переводчик с OCR и STT запущен...")
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)

@@ -3,7 +3,21 @@
 .env.local
 .env.*.local
 
-# Common secrets
-*_token*
-*_key*
-*_secret*
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
