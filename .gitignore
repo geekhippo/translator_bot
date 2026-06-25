@@ -1,0 +1,9 @@
+# Environment variables - never commit tokens/secrets
+.env
+.env.local
+.env.*.local
+
+# Common secrets
+*_token*
+*_key*
+*_secret*
