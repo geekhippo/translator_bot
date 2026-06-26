@@ -15,7 +15,7 @@ import io
 import httpx
 
 STATS_FILE = "/app/data/stats.json"
-MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB лимит на медиафайлы
+MAX_FILE_SIZE = 150 * 1024 * 1024  # 150 MB лимит на медиафайлы
 
 try:
     import fitz  # PyMuPDF
