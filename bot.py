@@ -41,8 +41,10 @@ except ImportError:
     LINK_SUPPORT = False
     logging.warning("trafilatura не установлен, поддержка ссылок отключена")
 
-TOKEN = os.environ.get("BOT_TOKEN")
-GROQ_API_KEYS = [k.strip() for k in os.getenv("GROQ_API_KEYS", "").split(",") if k.strip()]
+TOKEN = os.environ.get("BOT_TOKEN") or os.environ.get("TELEGRAM_TOKEN", "")
+# Поддержка обоих вариантов имени переменной: GROQ_API_KEYS и GROQ_API_KEY
+_raw_keys = os.getenv("GROQ_API_KEYS", "") or os.getenv("GROQ_API_KEY", "")
+GROQ_API_KEYS = [k.strip() for k in _raw_keys.split(",") if k.strip()]
 current_key_index = 0
 
 logging.basicConfig(
